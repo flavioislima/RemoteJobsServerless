@@ -1,3 +1,4 @@
+/* eslint-disable no-undef */
 const functions = require('firebase-functions')
 const Parser = require('rss-parser')
 const axios = require('axios')
@@ -18,7 +19,7 @@ exports.getRemoteJobs = functions.https.onRequest(async (request, response) => {
   let remoteOkJobs = await axios.get(remoteOkApi).then(res => res.data)
   remoteOkJobs.shift() // removes api information
   
-  let allJobs = remoteOkJobs.map((job, i) => {
+  let allJobs = remoteOkJobs.map((job) => {
     const { logo, company_logo, id, company, position, date, url, description, tags } = job
     const rLogo = 'https://remoteok.io/assets/logo.png'
     const logoUri = logo ? logo : company_logo
@@ -43,9 +44,9 @@ exports.getRemoteJobs = functions.https.onRequest(async (request, response) => {
   ]
   const imgRegex = /(http)?s?:?(\/\/[^"']*\.(?:png|jpg|jpeg|gif|png|svg|webp))/g
     
-  return Promise.all(urls.map(async (url, i) => 
+  return Promise.all(urls.map(async (url) => 
     await parser.parseURL(url)
-      .then((feed) => feed.items.map((item, i) => {
+      .then((feed) => feed.items.map((item) => {
         const { title, content, pubDate, link } = item  
         const company = title.split(':')[0]
         const position = title.split(':')[1].slice(1)
@@ -68,10 +69,10 @@ exports.getRemoteJobs = functions.https.onRequest(async (request, response) => {
           return { company, position, image, date, description, id: link, url: link, tags: [tags.join(' ')] }
       })
     )
-    .catch(err => console.error(err))
+    .catch(err => err)
   ))
     .then((res) => {
-      res.forEach((jobs, i) => jobs ? allJobs = [...allJobs, ...jobs] : allJobs = [...allJobs])
+      res.forEach((jobs) => jobs ? allJobs = [...allJobs, ...jobs] : allJobs = [...allJobs])
       const sortedJobs = allJobs.sort((job1, job2) => {
         const firstDate = Date.parse(job1.date)
         const secondDate = Date.parse(job2.date)
