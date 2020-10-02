@@ -16,10 +16,13 @@ function removeDuplicates(jobsWithId) {
 exports.getRemoteJobs = functions.https.onRequest(async (request, response) => {
   // Get RemoteOk Jobs
   const remoteOkApi = 'https://remoteok.io/api'
-  let remoteOkJobs = await axios.get(remoteOkApi).then(res => res.data)
+  let remoteOkJobs = [];
+  await axios.get(remoteOkApi)
+   .then(res => remoteOkJobs = res.data)
+   .catch(() => console.error('remoteOkApi is Down'))
   remoteOkJobs.shift() // removes api information
   
-  let allJobs = remoteOkJobs.map((job) => {
+  let allJobs =  remoteOkJobs.length ? remoteOkJobs.map((job) => {
     const { logo, company_logo, id, company, position, date, url, description, tags } = job
     const rLogo = 'https://remoteok.io/assets/logo.png'
     const logoUri = logo ? logo : company_logo
@@ -27,7 +30,7 @@ exports.getRemoteJobs = functions.https.onRequest(async (request, response) => {
     const formatedDate = new Date(date).toUTCString()
 
     return { id, company, position, date: formatedDate, image, description, url, tags }
-  })
+  }) : [];
 
   // Get weWorkRemotely Jobs
   const parser = new Parser()
@@ -69,9 +72,10 @@ exports.getRemoteJobs = functions.https.onRequest(async (request, response) => {
           return { company, position, image, date, description, id: link, url: link, tags: [tags.join(' ')] }
       })
     )
-    .catch(err => err)
+    .catch(() => console.error(`${url} is not working`))
   ))
     .then((res) => {
+      if (res.length < 5) console.log(res)
       res.forEach((jobs) => jobs ? allJobs = [...allJobs, ...jobs] : allJobs = [...allJobs])
       const sortedJobs = allJobs.sort((job1, job2) => {
         const firstDate = Date.parse(job1.date)
@@ -90,5 +94,6 @@ exports.getRemoteJobs = functions.https.onRequest(async (request, response) => {
       return response.json(jobsFinalList)
     }
   )
+  .catch((err) => console.error(err))
 })
   
