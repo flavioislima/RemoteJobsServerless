@@ -2,6 +2,7 @@
 const functions = require('firebase-functions')
 const Parser = require('rss-parser')
 const axios = require('axios')
+const cors = require('cors')
 
 function removeDuplicates(jobsWithId) {
   return jobsWithId.reduce((acc, current) => {
@@ -14,6 +15,7 @@ function removeDuplicates(jobsWithId) {
 }
 
 exports.getRemoteJobs = functions.https.onRequest(async (request, response) => {
+  cors()(request, response, async () => {
   // Get RemoteOk Jobs
   const remoteOkApi = 'https://remoteok.io/api'
   let remoteOkJobs = [];
@@ -28,8 +30,14 @@ exports.getRemoteJobs = functions.https.onRequest(async (request, response) => {
     const logoUri = logo ? logo : company_logo
     const image = logoUri ? { uri: logoUri } : { uri: rLogo }
     const formatedDate = new Date(date).toUTCString()
+    let jobsTags = tags === null ? ['remote work'] : tags
+    
+    // tags is an object
+    if (!jobsTags.length){
+      jobsTags = Object.values(tags)
+    }
 
-    return { id, company, position, date: formatedDate, image, description, url, tags }
+    return { id, company, position, date: formatedDate, image, description, url, tags: jobsTags }
   }) : [];
 
   // Get weWorkRemotely Jobs
@@ -42,7 +50,7 @@ exports.getRemoteJobs = functions.https.onRequest(async (request, response) => {
     'https://weworkremotely.com/categories/remote-sales-and-marketing-jobs.rss',
     'https://weworkremotely.com/categories/remote-copywriting-jobs.rss',
     'https://weworkremotely.com/categories/remote-design-jobs.rss',
-    'https://weworkremotely.com/categories/remote-jobs.rss',
+    'https://weworkremotely.com/remote-jobs.rss',
     'https://weworkremotely.com/categories/remote-devops-sysadmin-jobs.rss',
   ]
   const imgRegex = /(http)?s?:?(\/\/[^"']*\.(?:png|jpg|jpeg|gif|png|svg|webp))/g
@@ -56,8 +64,12 @@ exports.getRemoteJobs = functions.https.onRequest(async (request, response) => {
         const fallBackImage = 'https://weworkremotely.com/assets/wwr-social-fd7d545c56e975b65fae9cf49346aac95a8cdb4774b2c269af89ac8993141380.png'
         const imageUrl = content.match(imgRegex)
         const image = { uri: imageUrl ? imageUrl[0] : fallBackImage}
-        const tags = url.slice(45).split('.')[0].split('-')
-        tags.pop()
+        let tags = 'remote work'
+        if (url !== 'https://weworkremotely.com/remote-jobs.rss'){
+          tags = url.slice(45).split('.')[0].split('-')
+          tags.pop()
+          tags = tags.join(' ')
+        }
         const date = new Date(pubDate).toUTCString()
         const description = content
         .replace(/<(?:.|\n)*?>/gm, '')
@@ -68,11 +80,11 @@ exports.getRemoteJobs = functions.https.onRequest(async (request, response) => {
           '"'
           )
           .trim()
-          
-          return { company, position, image, date, description, id: link, url: link, tags: [tags.join(' ')] }
+
+          return { company, position, image, date, description, id: link, url: link, tags: [tags] }
       })
     )
-    .catch(() => console.error(`${url} is not working`))
+    .catch((err) => console.error(`${url} is not working`, {err}))
   ))
     .then((res) => {
       if (res.length < 5) console.log(res)
@@ -95,5 +107,6 @@ exports.getRemoteJobs = functions.https.onRequest(async (request, response) => {
     }
   )
   .catch((err) => console.error(err))
+})
 })
   
