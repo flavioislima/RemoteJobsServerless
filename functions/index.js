@@ -1,12 +1,19 @@
 /* eslint-disable no-undef */
-const functions = require('firebase-functions')
+const {onRequest} = require('firebase-functions/v2/https')
+const {onSchedule} = require('firebase-functions/v2/scheduler')
+const {setGlobalOptions} = require('firebase-functions/v2')
 const admin = require('firebase-admin')
 const Parser = require('rss-parser')
 const axios = require('axios')
-const cors = require('cors')({ origin: true })
 
 // Initialize Firebase Admin
 admin.initializeApp()
+
+// Set global options for all v2 functions
+setGlobalOptions({
+  region: 'us-central1',
+  maxInstances: 10
+})
 
 /**
  * Utility function to perform HTTP GET requests with automatic retries and exponential backoff
@@ -464,7 +471,7 @@ async function fetchAndAggregateJobs(useServerTimestamp = true) {
   return {
     jobs: jobsFinalList,
     metadata: {
-      lastUpdated: new Date().toISOString(),
+      lastUpdated: useServerTimestamp ? admin.firestore.FieldValue.serverTimestamp() : new Date().toISOString(),
       jobCount: jobsFinalList.length,
       sources: sourcesMetadata,
       updateDurationMs
@@ -474,40 +481,36 @@ async function fetchAndAggregateJobs(useServerTimestamp = true) {
 
 /**
  * Scheduled Cloud Function to update remote jobs cache hourly
- * Runs every hour via Cloud Scheduler
+ * Runs every hour via Cloud Scheduler (v2 API)
  * Splits jobs into chunks to avoid Firestore 1MB document limit
  */
-exports.updateRemoteJobsCache = functions
-  .runWith({
-    timeoutSeconds: 540,
-    memory: '512MB'
-  })
-  .pubsub.schedule('every 1 hours')
-  .onRun(async () => {
-    try {
-      console.log('Starting scheduled job cache update...')
-      
-      const result = await fetchAndAggregateJobs()
-      
-      // If no jobs were found from any source, log warning but don't fail
-      if (result.jobs.length === 0) {
-        console.warn('No jobs found from any source during scheduled update')
-      }
-      
-      const db = admin.firestore()
-      
-      // Save jobs to cache using shared helper function
-      await saveJobsToCache(result.jobs, result.metadata, db)
-      
-      console.log(`Cache updated successfully: ${result.jobs.length} jobs from ${Object.keys(result.metadata.sources).length} sources`)
-      console.log(`Update took ${result.metadata.updateDurationMs}ms`)
-      
-      return null
-    } catch (error) {
-      console.error('Error updating job cache:', error)
-      throw error
+exports.updateRemoteJobsCache = onSchedule({
+  schedule: 'every 1 hours',
+  timeoutSeconds: 540,
+  memory: '512MiB'
+}, async () => {
+  try {
+    console.log('Starting scheduled job cache update...')
+    
+    const result = await fetchAndAggregateJobs()
+    
+    // If no jobs were found from any source, log warning but don't fail
+    if (result.jobs.length === 0) {
+      console.warn('No jobs found from any source during scheduled update')
     }
-  })
+    
+    const db = admin.firestore()
+    
+    // Save jobs to cache using shared helper function
+    await saveJobsToCache(result.jobs, result.metadata, db)
+    
+    console.log(`Cache updated successfully: ${result.jobs.length} jobs from ${Object.keys(result.metadata.sources).length} sources`)
+    console.log(`Update took ${result.metadata.updateDurationMs}ms`)
+  } catch (error) {
+    console.error('Error updating job cache:', error)
+    throw error
+  }
+})
 
 /**
  * Helper function to save jobs to Firestore in chunks
@@ -556,11 +559,13 @@ async function saveJobsToCache(jobs, metadata, db) {
 /**
  * Firebase function to get remote job listings from cache
  * Reads from Firestore chunks and aggregates them for fast response times
- * Returns a plain array for backward compatibility with existing clients
+ * Returns a plain array for backward compatibility with existing clients (v2 API)
  */
-exports.getRemoteJobs = functions
-  .https.onRequest(async (request, response) => {
-    cors(request, response, async () => {
+exports.getRemoteJobs = onRequest({
+  timeoutSeconds: 60,
+  memory: '256MiB',
+  cors: true
+}, async (request, response) => {
       try {
         const db = admin.firestore()
         const metadataDoc = await db.collection('remoteJobs').doc('metadata').get()
@@ -638,5 +643,5 @@ exports.getRemoteJobs = functions
           })
         }
       }
-    })
-  })
+})
+
