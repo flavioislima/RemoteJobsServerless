@@ -464,7 +464,7 @@ async function fetchAndAggregateJobs(useServerTimestamp = true) {
   return {
     jobs: jobsFinalList,
     metadata: {
-      lastUpdated: useServerTimestamp ? admin.firestore.FieldValue.serverTimestamp() : new Date().toISOString(),
+      lastUpdated: new Date().toISOString(),
       jobCount: jobsFinalList.length,
       sources: sourcesMetadata,
       updateDurationMs
@@ -495,44 +495,11 @@ exports.updateRemoteJobsCache = functions
       }
       
       const db = admin.firestore()
-      const batch = db.batch()
       
-      // Split jobs into chunks of 100 to stay under 1MB limit
-      const jobChunks = chunkJobs(result.jobs, 100)
-      console.log(`Splitting ${result.jobs.length} jobs into ${jobChunks.length} chunks`)
+      // Save jobs to cache using shared helper function
+      await saveJobsToCache(result.jobs, result.metadata, db)
       
-      // Store metadata in main document
-      const metadataDoc = db.collection('remoteJobs').doc('metadata')
-      batch.set(metadataDoc, {
-        ...result.metadata,
-        chunkCount: jobChunks.length,
-        jobCount: result.jobs.length
-      })
-      
-      // Delete old chunks (clean up previous data)
-      const oldChunks = await db.collection('remoteJobs')
-        .where('isChunk', '==', true)
-        .get()
-      
-      oldChunks.forEach(doc => {
-        batch.delete(doc.ref)
-      })
-      
-      // Store each chunk as a separate document
-      jobChunks.forEach((chunk, index) => {
-        const chunkDoc = db.collection('remoteJobs').doc(`chunk_${index}`)
-        batch.set(chunkDoc, {
-          jobs: chunk,
-          chunkIndex: index,
-          isChunk: true,
-          lastUpdated: result.metadata.lastUpdated
-        })
-      })
-      
-      // Commit all writes in a batch
-      await batch.commit()
-      
-      console.log(`Cache updated successfully: ${result.jobs.length} jobs in ${jobChunks.length} chunks from ${Object.keys(result.metadata.sources).length} sources`)
+      console.log(`Cache updated successfully: ${result.jobs.length} jobs from ${Object.keys(result.metadata.sources).length} sources`)
       console.log(`Update took ${result.metadata.updateDurationMs}ms`)
       
       return null
@@ -543,8 +510,53 @@ exports.updateRemoteJobsCache = functions
   })
 
 /**
+ * Helper function to save jobs to Firestore in chunks
+ * Used by both scheduled function and HTTP fallback
+ */
+async function saveJobsToCache(jobs, metadata, db) {
+  const batch = db.batch()
+  
+  // Split jobs into chunks of 100
+  const jobChunks = chunkJobs(jobs, 100)
+  console.log(`Splitting ${jobs.length} jobs into ${jobChunks.length} chunks`)
+  
+  // Store metadata in main document
+  const metadataDoc = db.collection('remoteJobs').doc('metadata')
+  batch.set(metadataDoc, {
+    ...metadata,
+    chunkCount: jobChunks.length,
+    jobCount: jobs.length
+  })
+  
+  // Delete old chunks (clean up previous data)
+  const oldChunks = await db.collection('remoteJobs')
+    .where('isChunk', '==', true)
+    .get()
+  
+  oldChunks.forEach(doc => {
+    batch.delete(doc.ref)
+  })
+  
+  // Store each chunk as a separate document
+  jobChunks.forEach((chunk, index) => {
+    const chunkDoc = db.collection('remoteJobs').doc(`chunk_${index}`)
+    batch.set(chunkDoc, {
+      jobs: chunk,
+      chunkIndex: index,
+      isChunk: true,
+      lastUpdated: metadata.lastUpdated
+    })
+  })
+  
+  // Commit all writes in a batch
+  await batch.commit()
+  console.log(`Saved ${jobs.length} jobs in ${jobChunks.length} chunks to cache`)
+}
+
+/**
  * Firebase function to get remote job listings from cache
  * Reads from Firestore chunks and aggregates them for fast response times
+ * Returns a plain array for backward compatibility with existing clients
  */
 exports.getRemoteJobs = functions
   .https.onRequest(async (request, response) => {
@@ -554,19 +566,21 @@ exports.getRemoteJobs = functions
         const metadataDoc = await db.collection('remoteJobs').doc('metadata').get()
         
         if (!metadataDoc.exists) {
-          console.warn('Cache metadata does not exist, fetching live data as fallback')
+          console.warn('Cache metadata does not exist, fetching live data and populating cache')
           
-          // Fallback: fetch live data if cache doesn't exist (use ISO timestamp for fallback)
-          const result = await fetchAndAggregateJobs(false)
+          // Fallback: fetch live data if cache doesn't exist
+          const result = await fetchAndAggregateJobs(true)
           
-          return response.json({
-            jobs: result.jobs,
-            metadata: {
-              ...result.metadata,
-              lastUpdated: new Date().toISOString(),
-              cacheStatus: 'live-fetch'
-            }
-          })
+          // Save to cache for next time using chunked approach
+          try {
+            await saveJobsToCache(result.jobs, result.metadata, db)
+            console.log('Successfully populated initial cache')
+          } catch (cacheError) {
+            console.error('Failed to populate cache:', cacheError)
+          }
+          
+          // Return plain array for backward compatibility
+          return response.json(result.jobs)
         }
         
         const metadata = metadataDoc.data()
@@ -592,39 +606,29 @@ exports.getRemoteJobs = functions
           }
         })
         
-        // Calculate cache age
-        const cacheAge = metadata.lastUpdated
-          ? Date.now() - metadata.lastUpdated.toDate().getTime()
-          : 0
-        const cacheAgeMinutes = Math.floor(cacheAge / 60000)
+        // Log cache metadata for monitoring (but don't return it to maintain compatibility)
+        console.log(`Returning ${allJobs.length} jobs from cache (age: ${Math.floor((Date.now() - metadata.lastUpdated.toDate().getTime()) / 60000)} minutes)`)
         
-        // Return cached data with metadata
-        return response.json({
-          jobs: allJobs,
-          metadata: {
-            lastUpdated: metadata.lastUpdated ? metadata.lastUpdated.toDate().toISOString() : new Date().toISOString(),
-            jobCount: metadata.jobCount,
-            cacheAgeMinutes,
-            cacheStatus: 'cached',
-            chunkCount: metadata.chunkCount
-          }
-        })
+        // Return plain array for backward compatibility with existing clients
+        return response.json(allJobs)
       } catch (error) {
         console.error('Error reading from cache:', error)
         
         // Final fallback: try to fetch live data
         try {
           console.log('Attempting live fetch as final fallback')
-          const result = await fetchAndAggregateJobs(false)
-          return response.json({
-            jobs: result.jobs,
-            metadata: {
-              ...result.metadata,
-              lastUpdated: new Date().toISOString(),
-              cacheStatus: 'fallback-fetch',
-              error: error.message
-            }
-          })
+          const result = await fetchAndAggregateJobs(true)
+          
+          // Try to save to cache
+          try {
+            await saveJobsToCache(result.jobs, result.metadata, db)
+            console.log('Successfully populated cache after error recovery')
+          } catch (cacheError) {
+            console.error('Failed to populate cache during error recovery:', cacheError)
+          }
+          
+          // Return plain array for backward compatibility
+          return response.json(result.jobs)
         } catch (fallbackError) {
           console.error('Fallback fetch also failed:', fallbackError)
           return response.status(500).json({
