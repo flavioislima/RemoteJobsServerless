@@ -411,7 +411,7 @@ function chunkJobs(jobs, chunkSize = 100) {
  * Helper function to fetch and aggregate jobs from all sources
  * Used by both the scheduled function and HTTP fallback
  */
-async function fetchAndAggregateJobs(useServerTimestamp = true) {
+async function fetchAndAggregateJobs() {
   const startTime = Date.now()
   const sourcesMetadata = {}
   
@@ -467,11 +467,11 @@ async function fetchAndAggregateJobs(useServerTimestamp = true) {
   const jobsFinalList = removeDuplicates(sortedJobs)
   
   const updateDurationMs = Date.now() - startTime
-  
+
   return {
     jobs: jobsFinalList,
     metadata: {
-      lastUpdated: useServerTimestamp ? admin.firestore.FieldValue.serverTimestamp() : new Date().toISOString(),
+      lastUpdated: new Date(),
       jobCount: jobsFinalList.length,
       sources: sourcesMetadata,
       updateDurationMs
@@ -574,7 +574,7 @@ exports.getRemoteJobs = onRequest({
           console.warn('Cache metadata does not exist, fetching live data and populating cache')
           
           // Fallback: fetch live data if cache doesn't exist
-          const result = await fetchAndAggregateJobs(true)
+          const result = await fetchAndAggregateJobs()
           
           // Save to cache for next time using chunked approach
           try {
@@ -622,7 +622,7 @@ exports.getRemoteJobs = onRequest({
         // Final fallback: try to fetch live data
         try {
           console.log('Attempting live fetch as final fallback')
-          const result = await fetchAndAggregateJobs(true)
+          const result = await fetchAndAggregateJobs()
           
           // Try to save to cache
           try {
