@@ -118,10 +118,28 @@ async function fetchRemoteOkJobs() {
  */
 function cleanDescription(content) {
   return content
+    // First decode HTML entities like &lt; and &gt;
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>')
+    .replace(/&quot;/g, '"')
+    .replace(/&#39;/g, "'")
+    .replace(/&amp;/g, '&')
+    // Remove all HTML tags (including the decoded ones)
     .replace(/<(?:.|\n)*?>/gm, '')
-    .replace(/&amp;/gm, '&')
-    .replace(/&#8211;/gm, '-')
-    .replace(/&rsquo;|&#8217;|&#8216;|&#8220;|&#8221;|&nbsp;|&ldquo;|&rdquo;/gm, '"')
+    // Remove escaped characters like \n, \t, \"
+    .replace(/\\n/g, ' ')
+    .replace(/\\t/g, ' ')
+    .replace(/\\"/g, '"')
+    .replace(/\\'/g, "'")
+    // Clean up special characters and entities
+    .replace(/&#8211;/g, '-')
+    .replace(/&#8212;/g, '-')
+    .replace(/&rsquo;|&#8217;|&#8216;/g, "'")
+    .replace(/&ldquo;|&rdquo;|&#8220;|&#8221;/g, '"')
+    .replace(/&nbsp;/g, ' ')
+    .replace(/&hellip;|&#8230;/g, '...')
+    // Remove multiple spaces and trim
+    .replace(/\s+/g, ' ')
     .trim()
 }
 
